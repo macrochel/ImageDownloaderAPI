@@ -6,49 +6,121 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 )
+
+type DownloadRequest struct {
+	URL string `json:"url"`
+}
 
 func main() {
 	app := fiber.New()
 
-	// Define a route to handle image download
-	app.Post("/download", func(c *fiber.Ctx) error {
-		// Get the URL from the request body
-		url := c.FormValue("url")
-		if url == "" {
-			return c.Status(http.StatusBadRequest).SendString("Missing 'url' parameter")
+	app.Post("/download/FromUrl", func(c *fiber.Ctx) error {
+		var req DownloadRequest
+		if err := c.BodyParser(&req); err != nil {
+			return err
 		}
-
-		// Download and save the image
-		fileName := downloadImage(url)
-
-		return c.SendString(":2050/static/" + fileName)
+		fileName := downloadImage(req.URL, false)
+		return c.SendString("http://192.168.0.1:2050/static/" + fileName)
 	})
 
-	// Serve static files from the 'statics' folder
+	app.Post("/download/FromUrlWithProxy", func(c *fiber.Ctx) error {
+		var req DownloadRequest
+		if err := c.BodyParser(&req); err != nil {
+			return err
+		}
+		fileName := downloadImage(req.URL, true)
+		return c.SendString("http://192.168.0.1:2050/static/" + fileName)
+	})
+
+	app.Post("/download/FromFile", func(c *fiber.Ctx) error {
+		file, err := c.FormFile("file")
+		if err != nil {
+			return err
+		}
+		fileName := uuid.New().String() + ".jpg"
+		destination := "./statics/" + fileName
+		if err := c.SaveFile(file, destination); err != nil {
+			return err
+		}
+		return c.SendString("http://192.168.0.1:2050/static/" + fileName)
+	})
+
+	app.Get("/clear", func(c *fiber.Ctx) error {
+		cleanStatics()
+		customResponse := map[string]interface{}{
+			"status": "success",
+		}
+
+		return c.JSON(customResponse)
+	})
+
 	app.Static("/static", "./statics")
 
-	// Start the server
 	log.Fatal(app.Listen(":2050"))
 }
 
-func downloadImage(url string) string {
-	response, err := http.Get(url)
-	print(err)
+func downloadImage(urlString string, useProxy bool) string {
+	var client *http.Client
+
+	if useProxy {
+		proxyURL := ""
+		proxy := func(_ *http.Request) (*url.URL, error) {
+			return url.Parse(proxyURL)
+		}
+
+		transport := &http.Transport{
+			Proxy: proxy,
+		}
+
+		client = &http.Client{
+			Transport: transport,
+			Timeout:   30 * time.Second,
+		}
+	} else {
+		client = &http.Client{
+			Timeout: 30 * time.Second,
+		}
+	}
+
+	request, err := http.NewRequest("GET", urlString, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	response, err := client.Do(request)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer response.Body.Close()
 
 	hash := md5.New()
-	hash.Write([]byte(url))
+	hash.Write([]byte(urlString))
 	hashInBytes := hash.Sum(nil)
 	fileName := hex.EncodeToString(hashInBytes) + ".jpg"
 
 	file, err := os.Create(filepath.Join("./statics", fileName))
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer file.Close()
 
 	_, err = io.Copy(file, response.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	return fileName
+}
+
+func cleanStatics() {
+	os.RemoveAll("./statics")
+	os.MkdirAll("./statics", 0700)
 }

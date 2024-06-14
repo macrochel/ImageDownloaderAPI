@@ -1,7 +1,10 @@
+version: '3.9'
 services:
   web:
     build: .
     ports:
-      - "3000:3000"
+      - "2050:2050"
     volumes:
       - .:/usr/src/app
+    command: go run ./cmd/main.go -b 0.0.0.0
+    restart: always
